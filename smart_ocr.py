@@ -399,17 +399,26 @@ def pad_boxes_px(boxes: List[Tuple[int,int,int,int]], pad_px: int = 2):
         out.append((max(0,x1-pad_px), max(0,y1-pad_px), x2+pad_px, y2+pad_px))
     return out
 
-def px_boxes_to_pt_rects(px_boxes: List[Tuple[int,int,int,int]], dpi: int, page_height_pt: float) -> List[fitz.Rect]:
-    """px → pt (PDF 좌표계 보정: y축 뒤집기). page_height_pt = page.rect.height"""
-    scale = 72.0 / float(dpi)
-    rects: List[fitz.Rect] = []
+def px_boxes_to_pt_rects_pxaware(
+    px_boxes,            # List[Tuple[int,int,int,int]]
+    pix_w, pix_h,        # 렌더된 픽스맵 실제 픽셀 크기
+    page_w_pt, page_h_pt # PDF 페이지 실제 pt 크기 (page.rect.width/height)
+):
+    """
+    px → pt (축별 실제 스케일 사용, **y축 뒤집기 없음**).
+    PyMuPDF 좌표계와 get_pixmap 결과는 모두 (0,0)=왼쪽-위, y는 아래로 증가.
+    """
+    sx = page_w_pt / float(pix_w)
+    sy = page_h_pt / float(pix_h)
+    rects = []
     for x1, y1, x2, y2 in px_boxes:
-        X1 = x1 * scale
-        X2 = x2 * scale
-        Y1 = page_height_pt - (y2 * scale)  # 상단
-        Y2 = page_height_pt - (y1 * scale)  # 하단
-        rects.append(fitz.Rect(X1, Y1, X2, Y2))
+        X1 = x1 * sx
+        X2 = x2 * sx
+        Y0 = y1 * sy   # 상단
+        Y1 = y2 * sy   # 하단
+        rects.append(fitz.Rect(X1, Y0, X2, Y1))
     return rects
+
 
 # --------------------------
 # Page policy
@@ -524,7 +533,6 @@ def handle_pdf(path: Path, args, east_net):
     outdir = Path(args.out); ensure_dir(outdir)
     results = {"file": str(path), "pages": []}
 
-    # 옵션 유무에 따라 안전하게 처리 (없으면 False로 간주)
     no_save = getattr(args, "no_save", False)
     print_text = getattr(args, "print_text", False)
 
@@ -532,80 +540,76 @@ def handle_pdf(path: Path, args, east_net):
         total = len(doc)
         pages = pick_pages(total, args.page_policy, args.first_n, args.last_n)
 
-        # Pass 1: 텍스트 레이어 키워드 레댁션 (파일 저장은 no_save가 아닐 때만)
+        # Pass 1: 텍스트 레이어 키워드 레댁션
         if args.redact in ("keywords","all") and not no_save:
             work = fitz.open(stream=doc.tobytes(), filetype="pdf")
             for i in range(total):
                 p = work.load_page(i)
                 if pdf_page_has_text(p):
-                    rects = pdf_search_boxes_for_keywords(
-                        p, list(set(HEADER_KEYWORDS + FIELD_KEYWORDS))
-                    )
+                    rects = pdf_search_boxes_for_keywords(p, list(set(HEADER_KEYWORDS + FIELD_KEYWORDS)))
                     if rects:
                         redact_pdf_page(p, rects)
             work.save(outdir / f"{path.stem}.textlayer.redacted.pdf", deflate=True)
             work.close()
 
-        # ▶ 추가: 텍스트 레이어가 있든 없든, "이메일만" 레댁션하여 PDF로 저장 (진짜 삭제)
+        # Pass 1.5: 이메일만 진짜 레댁션
         if args.redact == "emails" and not no_save:
             work2 = fitz.open(stream=doc.tobytes(), filetype="pdf")
             for i in range(total):
                 p2 = work2.load_page(i)
                 if pdf_page_has_text(p2):
-                    # 텍스트 레이어에서 이메일 값 좌표(포인트) 추출 후 레댁션
                     email_rects = pdf_email_boxes(p2)
                     if email_rects:
                         email_rects = pad_rects_pt(email_rects, pad_pt=1.0)
                         redact_pdf_page(p2, email_rects)
                 else:
-                    # 스캔/이미지 페이지: 렌더 원본에서 OCR → px 박스 → 병합/패딩 → pt 변환(Y 뒤집기) → 레댁션
+                    # 스캔/이미지 페이지
                     zoom = args.dpi / 72.0
                     pix = p2.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
                     pil_raw = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-                    # 해상도 / EAST 필터
                     if mpixels_of_img(pil_raw) < args.min_mp:
                         continue
                     if not east_has_text(east_net, pil_raw, conf_thresh=args.east_conf):
                         continue
 
-                    # ⚠️ 전처리 없이 원본 렌더 이미지로 OCR (좌표 일치 보장)
-                    text_tmp, data_tmp = tesseract_ocr(
+                    # 전처리 없이 원본 렌더로 OCR (좌표 일치)
+                    _txt, data_tmp = tesseract_ocr(
                         pil_raw, lang=args.lang, psm=6, oem=args.oem, tessdata_dir=args.tessdata
                     )
                     email_px_boxes = ocr_email_boxes(data_tmp)
                     if not email_px_boxes:
                         continue
 
-                    # 가로 병합 + 소폭 패딩
-                    x_gap = max(12, int(0.02 * pix.width))   # 너비의 2%
-                    y_tol = max(10, int(0.01 * pix.height))  # 높이의 1%
+                    # 수평 병합 + 소폭 패딩
+                    x_gap = max(12, int(0.02 * pix.width))
+                    y_tol = max(10, int(0.01 * pix.height))
                     email_px_boxes = merge_horiz_boxes_px(email_px_boxes, x_gap=x_gap, y_tol=y_tol)
                     email_px_boxes = pad_boxes_px(email_px_boxes, pad_px=2)
 
-                    # px → pt (Y축 보정 포함), 그리고 pt 패딩 소폭 추가
-                    page_h = p2.rect.height  # pt
-                    email_pt_rects = px_boxes_to_pt_rects(email_px_boxes, args.dpi, page_h)
+                    # ❗ DPI 대신 픽셀/페이지 실측으로 매핑 (세로 한 줄 내려가는 오차 제거)
+                    page_w_pt = p2.rect.width
+                    page_h_pt = p2.rect.height
+                    email_pt_rects = px_boxes_to_pt_rects_pxaware(
+                        email_px_boxes, pix.width, pix.height, page_w_pt, page_h_pt
+                    )
                     email_pt_rects = pad_rects_pt(email_pt_rects, pad_pt=1.5)
-
                     redact_pdf_page(p2, email_pt_rects)
 
             work2.save(outdir / f"{path.stem}.emails.redacted.pdf", deflate=True)
             work2.close()
 
-        # Pass 2: OCR only selected pages that have NO text layer ...
+        # Pass 2: 선택 페이지 처리 (로그/저장)
         for pi in tqdm(pages, desc=f"OCR {path.name}", unit="page"):
             page = doc.load_page(pi)
             has_text = pdf_page_has_text(page)
             rec = {"page": pi+1}
 
             if has_text:
-                # ✅ 텍스트 레이어 읽기 + 로그/저장 + 좌표 수집
                 text = page.get_text("text") or ""
                 found = match_sensitive(text)
                 rec["found"] = found
 
-                # PDF 좌표 수집 (pt)
                 label_rects = pdf_label_boxes(page, "이메일")
                 value_rects = pdf_email_boxes(page)
                 rec["email_label_boxes_pt"] = [[float(r.x0), float(r.y0), float(r.x1), float(r.y1)] for r in label_rects]
@@ -623,51 +627,38 @@ def handle_pdf(path: Path, args, east_net):
                         payload = {"text": text, "found": found, "source": "pdf_text_layer",
                                    "email_label_boxes_pt": rec["email_label_boxes_pt"],
                                    "email_value_boxes_pt": rec["email_value_boxes_pt"]}
-                        (outdir / f"{base}.json").write_text(
-                            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-                        )
+                        (outdir / f"{base}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
                 results["pages"].append(rec)
                 continue
 
-            # ⬇️ 텍스트 레이어가 없는 페이지만 OCR
+            # 텍스트 레이어 없음 → OCR
             zoom = args.dpi / 72.0
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            # 0.3MP 미만 스킵
             if mpixels_of_img(pil) < args.min_mp:
                 rec["skipped"] = "small_resolution"
                 results["pages"].append(rec); continue
 
-            # EAST 빠른 체크
             if not east_has_text(east_net, pil, conf_thresh=args.east_conf):
                 rec["skipped"] = "no_text_detected"
                 results["pages"].append(rec); continue
 
-            # OCR
-            if not args.no_pre:
-                pil_for_ocr = preprocess_for_ocr(pil, do_deskew=not args.no_deskew)
-            else:
-                pil_for_ocr = pil
-
-            text, data = tesseract_ocr(pil_for_ocr, lang=args.lang, psm=args.psm,
-                                       oem=args.oem, tessdata_dir=args.tessdata)
+            pil_for_ocr = preprocess_for_ocr(pil, do_deskew=not args.no_deskew) if not args.no_pre else pil
+            text, data = tesseract_ocr(pil_for_ocr, lang=args.lang, psm=args.psm, oem=args.oem, tessdata_dir=args.tessdata)
             found = match_sensitive(text)
             rec["found"] = found
 
-            # 좌표 수집 (px)
             email_px_boxes = ocr_email_boxes(data)
             label_px_boxes = words_to_mask_by_keywords(data, ["이메일"])
             rec["email_label_boxes_px"] = label_px_boxes
             rec["email_value_boxes_px"] = email_px_boxes
 
-            # 콘솔 출력
             if print_text:
                 print(f"\n===== [OCR] {path.name} - p{pi+1} =====")
                 print(text.rstrip())
 
-            # 저장 (no_save면 저장 안 함)
             if not no_save:
                 base = f"{path.stem}_p{pi+1:04d}"
                 if args.save in ("txt", "both"):
@@ -675,16 +666,11 @@ def handle_pdf(path: Path, args, east_net):
                 if args.save in ("json", "both"):
                     payload = {"text": text, "ocr": data, "found": found, "source": "ocr_raster",
                                "email_label_boxes_px": label_px_boxes, "email_value_boxes_px": email_px_boxes}
-                    (outdir / f"{base}.json").write_text(
-                        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-                    )
+                    (outdir / f"{base}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-                # 라스터 스냅샷 레댁션 (PNG) — 이메일 모드는 PDF에서 이미 처리했으니, 여기선 keywords/all만
                 if args.redact in ("keywords","all"):
                     if args.redact == "all":
-                        boxes = words_to_mask_by_keywords(
-                            data, [w for w in data.get("text", []) if str(w).strip()]
-                        )
+                        boxes = words_to_mask_by_keywords(data, [w for w in data.get("text", []) if str(w).strip()])
                     else:
                         keys = list(set(HEADER_KEYWORDS + FIELD_KEYWORDS))
                         boxes = words_to_mask_by_keywords(data, keys)
@@ -695,6 +681,7 @@ def handle_pdf(path: Path, args, east_net):
             results["pages"].append(rec)
 
     return results
+
 
 # --------------------------
 # CLI

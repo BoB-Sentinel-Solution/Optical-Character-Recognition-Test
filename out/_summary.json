@@ -1,47 +1,38 @@
 [
   {
-    "file": "forensickorea.org_web_order_orderPrint....neck3922@gmail.pdf",
-    "pages": [
-      {
-        "page": 1,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [
-            "이메일"
-          ],
-          "regex": [
-            "email"
-          ]
-        },
-        "email_label_boxes_px": [
-          [
-            769,
-            676,
-            802,
-            767
-          ]
-        ],
-        "email_value_boxes_px": [
-          [
-            1082,
-            1308,
-            1119,
-            1660
-          ],
-          [
-            764,
-            1308,
-            801,
-            1660
-          ]
-        ]
-      },
-      {
-        "page": 2,
-        "skipped": "no_text_detected"
-      }
+    "file": "forensic_image.png",
+    "status": "ok",
+    "found": {
+      "headers": [],
+      "fields": [
+        "성명",
+        "이메일"
+      ],
+      "regex": [
+        "email"
+      ]
+    },
+    "email_label_boxes_px": [
+      [
+        121,
+        586,
+        219,
+        621
+      ]
+    ],
+    "email_value_boxes_px": [
+      [
+        795,
+        248,
+        1170,
+        288
+      ],
+      [
+        795,
+        588,
+        1170,
+        627
+      ]
     ]
   }
 ]
