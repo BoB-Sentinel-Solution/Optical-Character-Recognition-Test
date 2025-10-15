@@ -135,22 +135,26 @@ def load_east(model_path: Optional[str]):
 def east_has_text(net, pil_img: Image.Image, conf_thresh=EAST_CONF_THRESH) -> bool:
     """Fast check: returns True if any text-like boxes detected."""
     if net is None:
-        # If no model provided, assume we cannot decide -> proceed with OCR path
+        # no EAST → 판단 불가 시 OCR 경로를 타도록 True
         return True
 
     img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     H, W = img.shape[:2]
 
-    # EAST expects 320x320 or 640x640 multiples of 32
+    # EAST 입력 크기(32 배수)
     inpW = 320
     inpH = 320
-    blob = cv2.dnn.blobFromImage(img, 1.0, (inpW, inpH),
-                                 (123.68, 116.78, 103.94), swapRB=True, crop=False)
+    blob = cv2.dnn.blobFromImage(
+        img, 1.0, (inpW, inpH),
+        (123.68, 116.78, 103.94), swapRB=True, crop=False
+    )
     net.setInput(blob)
-    (scores, geometry) = net.forward(["feature_fusion/Conv_7/Sigmoid",
-                                      "feature_fusion/concat_3"])
+    (scores, geometry) = net.forward([
+        "feature_fusion/Conv_7/Sigmoid",
+        "feature_fusion/concat_3"
+    ])
 
-    rects = []
+    rects_xyxy = []
     confidences = []
 
     numRows, numCols = scores.shape[2:4]
@@ -163,13 +167,12 @@ def east_has_text(net, pil_img: Image.Image, conf_thresh=EAST_CONF_THRESH) -> bo
         anglesData = geometry[0, 4, y]
 
         for x in range(numCols):
-            score = scoresData[x]
+            score = float(scoresData[x])
             if score < conf_thresh:
                 continue
 
             offsetX = x * 4.0
             offsetY = y * 4.0
-
             angle = anglesData[x]
             cos = np.cos(angle)
             sin = np.sin(angle)
@@ -182,16 +185,35 @@ def east_has_text(net, pil_img: Image.Image, conf_thresh=EAST_CONF_THRESH) -> bo
             startX = int(endX - w)
             startY = int(endY - h)
 
-            rects.append((startX, startY, endX, endY))
-            confidences.append(float(score))
+            # xyxy 저장
+            rects_xyxy.append((startX, startY, endX, endY))
+            confidences.append(score)
 
-    if not rects:
+    if not rects_xyxy:
         return False
 
-    boxes = cv2.dnn.NMSBoxes(
-        [(*r, 1, 1) for r in rects], confidences, conf_thresh, EAST_NMS_THRESH
-    )
-    return len(boxes) > 0
+    # xyxy → xywh (정수, w/h 최소 1)
+    boxes_xywh = []
+    for (sx, sy, ex, ey) in rects_xyxy:
+        x = int(sx)
+        y = int(sy)
+        w = int(max(1, ex - sx))
+        h = int(max(1, ey - sy))
+        boxes_xywh.append([x, y, w, h])
+
+    # OpenCV는 list[list[int]] + list[float] 형식 요구
+    idxs = cv2.dnn.NMSBoxes(boxes_xywh, confidences, conf_thresh, EAST_NMS_THRESH)
+
+    # OpenCV 버전에 따라 반환형이 달라서 안전 처리
+    if idxs is None:
+        return False
+    if isinstance(idxs, (list, tuple)):
+        return len(idxs) > 0
+    # numpy array일 수 있음
+    try:
+        return len(idxs) > 0
+    except Exception:
+        return False
 
 # --------------------------
 # OCR + Sensitive detection
@@ -379,46 +401,70 @@ def handle_pdf(path: Path, args, east_net):
     outdir = Path(args.out); ensure_dir(outdir)
     results = {"file": str(path), "pages": []}
 
+    # 옵션 유무에 따라 안전하게 처리 (없으면 False로 간주)
+    no_save = getattr(args, "no_save", False)
+    print_text = getattr(args, "print_text", False)
+
     with fitz.open(path) as doc:
         total = len(doc)
         pages = pick_pages(total, args.page_policy, args.first_n, args.last_n)
 
-        # Pass 1: redact text-layer pages immediately if keywords present (no OCR)
-        if args.redact:
-            # We'll create a working copy in memory then write out
+        # Pass 1: 텍스트 레이어 키워드 레댁션 (파일 저장은 no_save가 아닐 때만)
+        if args.redact and not no_save:
             work = fitz.open(stream=doc.tobytes(), filetype="pdf")
             for i in range(total):
                 p = work.load_page(i)
                 if pdf_page_has_text(p):
-                    # search for keywords in PDF text layer
-                    rects = pdf_search_boxes_for_keywords(p, list(set(HEADER_KEYWORDS + FIELD_KEYWORDS)))
+                    rects = pdf_search_boxes_for_keywords(
+                        p, list(set(HEADER_KEYWORDS + FIELD_KEYWORDS))
+                    )
                     if rects:
                         redact_pdf_page(p, rects)
-            # save as *_textlayer.redacted.pdf
             work.save(outdir / f"{path.stem}.textlayer.redacted.pdf", deflate=True)
             work.close()
 
-        # Pass 2: OCR only selected pages that have NO text layer & (EAST says text-like) & not too small
+        # Pass 2: 페이지 정책에 따라 처리
         for pi in tqdm(pages, desc=f"OCR {path.name}", unit="page"):
             page = doc.load_page(pi)
-            has_text = pdf_page_has_text(page)
-            rec = {"page": pi+1, "skipped": None}
+            rec = {"page": pi + 1}
 
-            if has_text:
-                rec["skipped"] = "pdf_text_layer_present"
-                results["pages"].append(rec); continue
+            # ✅ 텍스트 레이어가 있으면 스킵하지 말고 읽어서 출력/저장
+            if pdf_page_has_text(page):
+                text = page.get_text("text") or ""
+                found = match_sensitive(text)
+                rec["found"] = found
 
-            # Render raster for EAST + OCR
+                # 콘솔 출력 (요청 반영)
+                # --print-text 없더라도 항상 출력하고 싶다면 조건을 제거하세요.
+                if print_text or True:
+                    print(f"\n===== [PDF] {path.name} - p{pi+1} (text-layer) =====")
+                    print(text.rstrip())
+
+                # 파일 저장 (no_save면 저장 안 함)
+                if not no_save:
+                    base = f"{path.stem}_p{pi+1:04d}"
+                    if args.save in ("txt", "both"):
+                        (outdir / f"{base}.txt").write_text(text, encoding="utf-8")
+                    if args.save in ("json", "both"):
+                        payload = {"text": text, "found": found, "source": "pdf_text_layer"}
+                        (outdir / f"{base}.json").write_text(
+                            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+                        )
+
+                results["pages"].append(rec)
+                continue
+
+            # ⬇️ 텍스트 레이어가 없는 페이지만 OCR
             zoom = args.dpi / 72.0
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            # 0.3MP skip
+            # 0.3MP 미만 스킵
             if mpixels_of_img(pil) < args.min_mp:
                 rec["skipped"] = "small_resolution"
                 results["pages"].append(rec); continue
 
-            # EAST quick check
+            # EAST 빠른 체크
             if not east_has_text(east_net, pil, conf_thresh=args.east_conf):
                 rec["skipped"] = "no_text_detected"
                 results["pages"].append(rec); continue
@@ -429,33 +475,46 @@ def handle_pdf(path: Path, args, east_net):
             else:
                 pil_for_ocr = pil
 
-            text, data = tesseract_ocr(pil_for_ocr, lang=args.lang, psm=args.psm,
-                                       oem=args.oem, tessdata_dir=args.tessdata)
+            text, data = tesseract_ocr(
+                pil_for_ocr, lang=args.lang, psm=args.psm, oem=args.oem, tessdata_dir=args.tessdata
+            )
             found = match_sensitive(text)
             rec["found"] = found
 
-            # Save page-wise outputs
-            base = f"{path.stem}_p{pi+1:04d}"
-            if args.save in ("txt", "both"):
-                (outdir / f"{base}.txt").write_text(text, encoding="utf-8")
-            if args.save in ("json", "both"):
-                (outdir / f"{base}.json").write_text(json.dumps({"text": text, "ocr": data, "found": found}, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 콘솔 출력
+            if print_text or True:
+                print(f"\n===== [OCR] {path.name} - p{pi+1} =====")
+                print(text.rstrip())
 
-            # Redaction on raster (optional) – produced as PNG snapshot of that page
-            if args.redact:
-                boxes = []
-                if args.redact == "all":
-                    boxes = words_to_mask_by_keywords(data, [w for w in data.get("text", []) if str(w).strip()])
-                elif args.redact == "keywords":
-                    keys = list(set(HEADER_KEYWORDS + FIELD_KEYWORDS))
-                    boxes = words_to_mask_by_keywords(data, keys)
-                if boxes:
-                    red = redact_image(pil, boxes)
-                    red.save(outdir / f"{base}.redacted.png")
+            # 저장 (no_save면 저장 안 함)
+            if not no_save:
+                base = f"{path.stem}_p{pi+1:04d}"
+                if args.save in ("txt", "both"):
+                    (outdir / f"{base}.txt").write_text(text, encoding="utf-8")
+                if args.save in ("json", "both"):
+                    payload = {"text": text, "ocr": data, "found": found, "source": "ocr_raster"}
+                    (outdir / f"{base}.json").write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+
+                # 라스터 스냅샷 레댁션 (PNG) — 저장 금지 시 생성 안 함
+                if args.redact:
+                    boxes = []
+                    if args.redact == "all":
+                        boxes = words_to_mask_by_keywords(
+                            data, [w for w in data.get("text", []) if str(w).strip()]
+                        )
+                    elif args.redact == "keywords":
+                        keys = list(set(HEADER_KEYWORDS + FIELD_KEYWORDS))
+                        boxes = words_to_mask_by_keywords(data, keys)
+                    if boxes:
+                        red = redact_image(pil, boxes)
+                        red.save(outdir / f"{base}.redacted.png")
 
             results["pages"].append(rec)
 
     return results
+
 
 # --------------------------
 # CLI
@@ -487,10 +546,13 @@ def main():
     ap.add_argument("--no-deskew", action="store_true", help="disable deskew")
     ap.add_argument("--content-type", type=str, default=None, help="override MIME if known from network (e.g., image/png, application/pdf)")
 
+    # ▶ 추가 옵션: 콘솔 출력/파일 저장 제어
+    ap.add_argument("--print-text", action="store_true", help="추출한 텍스트를 STDOUT으로 출력")
+    ap.add_argument("--no-save", action="store_true", help="모든 결과 파일 저장을 비활성화(_summary.json, txt/json, 레댁션 파일 포함)")
+
     args = ap.parse_args()
 
     set_tesseract_cmd(args.tess_cmd)
-
     east_net = load_east(args.east_model)
 
     in_path = Path(args.input)
@@ -521,9 +583,17 @@ def main():
         except Exception as e:
             summary.append({"file": str(f), "error": str(e)})
 
-    # Write run summary
-    (Path(args.out) / "_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    # ▶ 요약 파일 저장: --no-save가 아닐 때만
+    if not args.no_save:
+        (Path(args.out) / "_summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    # ▶ STDOUT 출력: 텍스트를 이미 많이 찍었다면 지저분해질 수 있으니,
+    #    print-text가 꺼져 있을 때만 요약 JSON을 출력
+    if not args.print_text:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
     main()
