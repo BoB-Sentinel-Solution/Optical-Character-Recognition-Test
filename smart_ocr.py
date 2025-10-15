@@ -139,7 +139,6 @@ def east_has_text(net, pil_img: Image.Image, conf_thresh=EAST_CONF_THRESH) -> bo
         return True
 
     img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-    H, W = img.shape[:2]
 
     # EAST 입력 크기(32 배수)
     inpW = 320
@@ -185,7 +184,6 @@ def east_has_text(net, pil_img: Image.Image, conf_thresh=EAST_CONF_THRESH) -> bo
             startX = int(endX - w)
             startY = int(endY - h)
 
-            # xyxy 저장
             rects_xyxy.append((startX, startY, endX, endY))
             confidences.append(score)
 
@@ -209,7 +207,6 @@ def east_has_text(net, pil_img: Image.Image, conf_thresh=EAST_CONF_THRESH) -> bo
         return False
     if isinstance(idxs, (list, tuple)):
         return len(idxs) > 0
-    # numpy array일 수 있음
     try:
         return len(idxs) > 0
     except Exception:
@@ -306,7 +303,6 @@ def redact_image(pil_img: Image.Image, boxes: List[Tuple[int,int,int,int]]) -> I
 def redact_pdf_page(page: fitz.Page, boxes: List[fitz.Rect]):
     for rect in boxes:
         page.add_redact_annot(rect, fill=(0, 0, 0))
-    # 실제로 제거
     page.apply_redactions()
 
 # --------------------------
@@ -325,6 +321,49 @@ def pdf_search_boxes_for_keywords(page: fitz.Page, keywords: List[str]) -> List[
         except Exception:
             pass
     return rects
+
+# --------------------------
+# Email/Label box helpers
+# --------------------------
+
+def pdf_label_boxes(page: fitz.Page, label: str = "이메일") -> List[fitz.Rect]:
+    """PDF 텍스트 레이어에서 특정 라벨(기본: '이메일')의 사각형 좌표(포인트 단위)를 반환."""
+    rects: List[fitz.Rect] = []
+    try:
+        rects = page.search_for(label, quads=False) or []
+    except Exception:
+        pass
+    return rects
+
+def pdf_email_boxes(page: fitz.Page) -> List[fitz.Rect]:
+    """PDF 텍스트 레이어에서 이메일 패턴에 매칭되는 단어들의 좌표(포인트 단위)를 반환."""
+    rects: List[fitz.Rect] = []
+    try:
+        for x0, y0, x1, y1, word, *_ in page.get_text("words") or []:
+            w = str(word or "")
+            if REGEX_PATTERNS["email"].fullmatch(w) or REGEX_PATTERNS["email"].search(w):
+                rects.append(fitz.Rect(x0, y0, x1, y1))
+    except Exception:
+        pass
+    return rects
+
+def ocr_email_boxes(ocr_data: Dict) -> List[Tuple[int, int, int, int]]:
+    """OCR(image_to_data) 결과에서 이메일로 인식된 단어들의 박스(픽셀 좌표)를 반환."""
+    boxes: List[Tuple[int, int, int, int]] = []
+    texts = ocr_data.get("text", []) or []
+    L = ocr_data.get("left", []) or []
+    T = ocr_data.get("top", []) or []
+    W = ocr_data.get("width", []) or []
+    H = ocr_data.get("height", []) or []
+    for i, w in enumerate(texts):
+        s = str(w or "").strip()
+        if not s:
+            continue
+        if REGEX_PATTERNS["email"].fullmatch(s) or REGEX_PATTERNS["email"].search(s):
+            x1 = int(L[i]); y1 = int(T[i])
+            x2 = x1 + int(W[i]); y2 = y1 + int(H[i])
+            boxes.append((x1, y1, x2, y2))
+    return boxes
 
 # --------------------------
 # Page policy
@@ -353,7 +392,10 @@ def pick_pages(total: int, policy: str, first_n: int = 3, last_n: int = 1) -> Li
 # --------------------------
 
 def handle_image(path: Path, args, east_net):
-    # Load and quick rules
+    outdir = Path(args.out); ensure_dir(outdir)
+    no_save = getattr(args, "no_save", False)
+    print_text = getattr(args, "print_text", False)
+
     pil = Image.open(path).convert("RGB")
 
     # Skip tiny resolution
@@ -365,43 +407,62 @@ def handle_image(path: Path, args, east_net):
         return {"file": str(path), "skipped": "no_text_detected"}
 
     # Preprocess → OCR
-    if not args.no_pre:
-        pil_for_ocr = preprocess_for_ocr(pil, do_deskew=not args.no_deskew)
-    else:
-        pil_for_ocr = pil
+    pil_for_ocr = preprocess_for_ocr(pil, do_deskew=not args.no_deskew) if not args.no_pre else pil
     text, data = tesseract_ocr(pil_for_ocr, lang=args.lang, psm=args.psm,
                                oem=args.oem, tessdata_dir=args.tessdata)
 
     found = match_sensitive(text)
 
+    # Email coords (px)
+    email_px_boxes = ocr_email_boxes(data)
+    label_px_boxes = words_to_mask_by_keywords(data, ["이메일"])
+
+    # Print to console
+    if print_text:
+        print(f"\n===== [IMG] {path.name} =====")
+        print(text.rstrip())
+
     # Save outputs
     stem = path.stem
-    outdir = Path(args.out); ensure_dir(outdir)
-    if args.save in ("txt", "both"):
-        (outdir / f"{stem}.txt").write_text(text, encoding="utf-8")
-    if args.save in ("json", "both"):
-        (outdir / f"{stem}.json").write_text(json.dumps({"text": text, "ocr": data, "found": found}, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not no_save:
+        if args.save in ("txt", "both"):
+            (outdir / f"{stem}.txt").write_text(text, encoding="utf-8")
+        if args.save in ("json", "both"):
+            payload = {
+                "text": text,
+                "ocr": data,
+                "found": found,
+                "source": "ocr_raster",
+                "email_label_boxes_px": label_px_boxes,
+                "email_value_boxes_px": email_px_boxes,
+            }
+            (outdir / f"{stem}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Redaction (optional)
-    if args.redact:
-        boxes = []
-        if args.redact == "all":
-            # mask all words
-            boxes = words_to_mask_by_keywords(data, [w for w in data.get("text", []) if str(w).strip()])
-        elif args.redact == "keywords":
-            keys = list(set(HEADER_KEYWORDS + FIELD_KEYWORDS))
-            boxes = words_to_mask_by_keywords(data, keys)
-        if boxes:
-            red = redact_image(pil, boxes)
-            red.save(outdir / f"{stem}.redacted.png")
+        # Redaction (optional)
+        if args.redact:
+            boxes = []
+            if args.redact == "all":
+                boxes = words_to_mask_by_keywords(data, [w for w in data.get("text", []) if str(w).strip()])
+            elif args.redact == "keywords":
+                keys = list(set(HEADER_KEYWORDS + FIELD_KEYWORDS))
+                boxes = words_to_mask_by_keywords(data, keys)
+            # 혹은 이메일 값만 가리려면: boxes = email_px_boxes
+            if boxes:
+                red = redact_image(pil, boxes)
+                red.save(outdir / f"{stem}.redacted.png")
 
-    return {"file": str(path), "status": "ok", "found": found}
+    return {
+        "file": str(path),
+        "status": "ok",
+        "found": found,
+        "email_label_boxes_px": label_px_boxes,
+        "email_value_boxes_px": email_px_boxes,
+    }
 
 def handle_pdf(path: Path, args, east_net):
     outdir = Path(args.out); ensure_dir(outdir)
     results = {"file": str(path), "pages": []}
 
-    # 옵션 유무에 따라 안전하게 처리 (없으면 False로 간주)
     no_save = getattr(args, "no_save", False)
     print_text = getattr(args, "print_text", False)
 
@@ -426,27 +487,36 @@ def handle_pdf(path: Path, args, east_net):
         # Pass 2: 페이지 정책에 따라 처리
         for pi in tqdm(pages, desc=f"OCR {path.name}", unit="page"):
             page = doc.load_page(pi)
-            rec = {"page": pi + 1}
+            rec: Dict = {"page": pi + 1}
 
-            # ✅ 텍스트 레이어가 있으면 스킵하지 말고 읽어서 출력/저장
+            # 텍스트 레이어가 있으면: 읽기 + 좌표 수집
             if pdf_page_has_text(page):
                 text = page.get_text("text") or ""
                 found = match_sensitive(text)
                 rec["found"] = found
 
-                # 콘솔 출력 (요청 반영)
-                # --print-text 없더라도 항상 출력하고 싶다면 조건을 제거하세요.
-                if print_text or True:
+                # 좌표 수집 (pt)
+                label_rects = pdf_label_boxes(page, "이메일")
+                value_rects = pdf_email_boxes(page)
+                rec["email_label_boxes_pt"] = [[float(r.x0), float(r.y0), float(r.x1), float(r.y1)] for r in label_rects]
+                rec["email_value_boxes_pt"] = [[float(r.x0), float(r.y0), float(r.x1), float(r.y1)] for r in value_rects]
+
+                if print_text:
                     print(f"\n===== [PDF] {path.name} - p{pi+1} (text-layer) =====")
                     print(text.rstrip())
 
-                # 파일 저장 (no_save면 저장 안 함)
                 if not no_save:
                     base = f"{path.stem}_p{pi+1:04d}"
                     if args.save in ("txt", "both"):
                         (outdir / f"{base}.txt").write_text(text, encoding="utf-8")
                     if args.save in ("json", "both"):
-                        payload = {"text": text, "found": found, "source": "pdf_text_layer"}
+                        payload = {
+                            "text": text,
+                            "found": found,
+                            "source": "pdf_text_layer",
+                            "email_label_boxes_pt": rec["email_label_boxes_pt"],
+                            "email_value_boxes_pt": rec["email_value_boxes_pt"],
+                        }
                         (outdir / f"{base}.json").write_text(
                             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
                         )
@@ -454,7 +524,7 @@ def handle_pdf(path: Path, args, east_net):
                 results["pages"].append(rec)
                 continue
 
-            # ⬇️ 텍스트 레이어가 없는 페이지만 OCR
+            # 텍스트 레이어가 없는 페이지 → 렌더 + EAST + Tesseract
             zoom = args.dpi / 72.0
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -470,34 +540,41 @@ def handle_pdf(path: Path, args, east_net):
                 results["pages"].append(rec); continue
 
             # OCR
-            if not args.no_pre:
-                pil_for_ocr = preprocess_for_ocr(pil, do_deskew=not args.no_deskew)
-            else:
-                pil_for_ocr = pil
-
+            pil_for_ocr = preprocess_for_ocr(pil, do_deskew=not args.no_deskew) if not args.no_pre else pil
             text, data = tesseract_ocr(
                 pil_for_ocr, lang=args.lang, psm=args.psm, oem=args.oem, tessdata_dir=args.tessdata
             )
             found = match_sensitive(text)
             rec["found"] = found
 
-            # 콘솔 출력
-            if print_text or True:
+            # 이메일 좌표 (px)
+            email_px_boxes = ocr_email_boxes(data)
+            label_px_boxes = words_to_mask_by_keywords(data, ["이메일"])
+            rec["email_label_boxes_px"] = label_px_boxes
+            rec["email_value_boxes_px"] = email_px_boxes
+
+            if print_text:
                 print(f"\n===== [OCR] {path.name} - p{pi+1} =====")
                 print(text.rstrip())
 
-            # 저장 (no_save면 저장 안 함)
             if not no_save:
                 base = f"{path.stem}_p{pi+1:04d}"
                 if args.save in ("txt", "both"):
                     (outdir / f"{base}.txt").write_text(text, encoding="utf-8")
                 if args.save in ("json", "both"):
-                    payload = {"text": text, "ocr": data, "found": found, "source": "ocr_raster"}
+                    payload = {
+                        "text": text,
+                        "ocr": data,
+                        "found": found,
+                        "source": "ocr_raster",
+                        "email_label_boxes_px": label_px_boxes,
+                        "email_value_boxes_px": email_px_boxes,
+                    }
                     (outdir / f"{base}.json").write_text(
                         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
                     )
 
-                # 라스터 스냅샷 레댁션 (PNG) — 저장 금지 시 생성 안 함
+                # 라스터 스냅샷 레댁션 (PNG)
                 if args.redact:
                     boxes = []
                     if args.redact == "all":
@@ -507,6 +584,7 @@ def handle_pdf(path: Path, args, east_net):
                     elif args.redact == "keywords":
                         keys = list(set(HEADER_KEYWORDS + FIELD_KEYWORDS))
                         boxes = words_to_mask_by_keywords(data, keys)
+                    # 또는 이메일 값만: boxes = email_px_boxes
                     if boxes:
                         red = redact_image(pil, boxes)
                         red.save(outdir / f"{base}.redacted.png")
@@ -514,7 +592,6 @@ def handle_pdf(path: Path, args, east_net):
             results["pages"].append(rec)
 
     return results
-
 
 # --------------------------
 # CLI
@@ -546,7 +623,7 @@ def main():
     ap.add_argument("--no-deskew", action="store_true", help="disable deskew")
     ap.add_argument("--content-type", type=str, default=None, help="override MIME if known from network (e.g., image/png, application/pdf)")
 
-    # ▶ 추가 옵션: 콘솔 출력/파일 저장 제어
+    # 추가 옵션: 콘솔 출력/파일 저장 제어
     ap.add_argument("--print-text", action="store_true", help="추출한 텍스트를 STDOUT으로 출력")
     ap.add_argument("--no-save", action="store_true", help="모든 결과 파일 저장을 비활성화(_summary.json, txt/json, 레댁션 파일 포함)")
 
@@ -583,17 +660,16 @@ def main():
         except Exception as e:
             summary.append({"file": str(f), "error": str(e)})
 
-    # ▶ 요약 파일 저장: --no-save가 아닐 때만
+    # 요약 파일 저장: --no-save가 아닐 때만
     if not args.no_save:
         (Path(args.out) / "_summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    # ▶ STDOUT 출력: 텍스트를 이미 많이 찍었다면 지저분해질 수 있으니,
-    #    print-text가 꺼져 있을 때만 요약 JSON을 출력
+    # STDOUT 출력: 텍스트를 이미 많이 찍는 경우 중복을 줄이기 위해,
+    # print-text가 꺼져 있을 때만 요약 JSON을 출력
     if not args.print_text:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
-
 
 if __name__ == "__main__":
     main()
