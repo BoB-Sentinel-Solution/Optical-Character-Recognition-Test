@@ -1,0 +1,13 @@
+{
+  "text": "에서도 방향을 잃지 않을 수 있다. 그리고 이러한 태도는 시간이 지나도 변하지 않는 가\n장 강력한 힘이 될 것이다. \n \n",
+  "found": {
+    "headers": [
+      "을"
+    ],
+    "fields": [],
+    "regex": []
+  },
+  "source": "pdf_text_layer",
+  "email_label_boxes_pt": [],
+  "email_value_boxes_pt": []
+}
