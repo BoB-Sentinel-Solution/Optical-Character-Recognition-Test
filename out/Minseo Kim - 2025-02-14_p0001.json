@@ -5,5 +5,7 @@
     "fields": [],
     "regex": []
   },
-  "source": "pdf_text_layer"
+  "source": "pdf_text_layer",
+  "email_label_boxes_pt": [],
+  "email_value_boxes_pt": []
 }
