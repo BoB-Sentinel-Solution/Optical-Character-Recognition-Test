@@ -1,281 +1,38 @@
 [
   {
-    "file": "BOB14.pdf",
-    "pages": [
-      {
-        "page": 1,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 2,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 3,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 4,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 5,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 6,
-        "found": {
-          "headers": [],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 7,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 8,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 9,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 10,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 11,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [
-            "이메일"
-          ],
-          "regex": []
-        },
-        "email_label_boxes_pt": [
-          [
-            131.05999755859375,
-            697.7684326171875,
-            164.05853271484375,
-            711.9879760742188
-          ]
-        ],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 12,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 13,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 14,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 15,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 16,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 17,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 18,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 19,
-        "found": {
-          "headers": [
-            "을",
-            "여권"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 20,
-        "found": {
-          "headers": [
-            "을",
-            "여권"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 21,
-        "found": {
-          "headers": [
-            "을"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      },
-      {
-        "page": 22,
-        "found": {
-          "headers": [
-            "을",
-            "여권"
-          ],
-          "fields": [],
-          "regex": []
-        },
-        "email_label_boxes_pt": [],
-        "email_value_boxes_pt": []
-      }
+    "file": "forensic_image.jpeg",
+    "status": "ok",
+    "found": {
+      "headers": [],
+      "fields": [
+        "성명",
+        "이메일"
+      ],
+      "regex": [
+        "email"
+      ]
+    },
+    "email_label_boxes_px": [
+      [
+        121,
+        586,
+        219,
+        621
+      ]
+    ],
+    "email_value_boxes_px": [
+      [
+        795,
+        248,
+        1170,
+        288
+      ],
+      [
+        795,
+        588,
+        1170,
+        627
+      ]
     ]
   }
 ]
